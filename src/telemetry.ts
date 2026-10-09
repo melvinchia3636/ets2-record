@@ -94,7 +94,12 @@ export class LiveProvider extends BaseProvider {
     const mod = await import("trucksim-telemetry");
     const telemetry = mod.truckSimTelemetry({
       sharedMemoryName: this.sharedMemoryName ?? defaultSharedMemoryName(),
-      onUpdate: (data) => this.emit("frame", toFrame(data, Date.now())),
+      onUpdate: (data) => {
+        // The library polls at ~60Hz even when the game isn't running, reporting
+        // stale data. Only emit frames while the game instance is actually active.
+        if (!data.sdkActive) return;
+        this.emit("frame", toFrame(data, Date.now()));
+      },
     });
     this.telemetry = telemetry;
 
