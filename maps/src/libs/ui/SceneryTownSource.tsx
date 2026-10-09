@@ -1,0 +1,121 @@
+import type { Ets2SelectableDlc } from '@truckermudgeon/map/constants';
+import {
+  Ets2SelectableDlcs,
+  toEts2DlcGuards,
+} from '@truckermudgeon/map/constants';
+import type { ExpressionSpecification } from 'maplibre-gl';
+import { Layer, Source } from 'react-map-gl/maplibre';
+import { baseTextLayout, textVariableAnchor } from './GameMapStyle';
+import type { Mode } from './colors';
+import { modeColors } from './colors';
+
+export const atsSceneryTownsUrl = `/extra-labels.geojson`;
+export const ets2SceneryTownsUrl = `/ets2-villages.geojson`;
+
+export const enum StateCode {
+  AR = 'AR',
+  AZ = 'AZ',
+  CA = 'CA',
+  CO = 'CO',
+  IA = 'IA',
+  ID = 'ID',
+  IL = 'IL',
+  KS = 'KS',
+  LA = 'LA',
+  MO = 'MO',
+  MT = 'MT',
+  NE = 'NE',
+  NM = 'NM',
+  NV = 'NV',
+  OK = 'OK',
+  OR = 'OR',
+  SD = 'SD',
+  TX = 'TX',
+  UT = 'UT',
+  WA = 'WA',
+  WY = 'WY',
+}
+const states: Record<StateCode, void> = {
+  [StateCode.AR]: undefined,
+  [StateCode.AZ]: undefined,
+  [StateCode.CA]: undefined,
+  [StateCode.CO]: undefined,
+  [StateCode.IA]: undefined,
+  [StateCode.ID]: undefined,
+  [StateCode.IL]: undefined,
+  [StateCode.KS]: undefined,
+  [StateCode.LA]: undefined,
+  [StateCode.MO]: undefined,
+  [StateCode.MT]: undefined,
+  [StateCode.NE]: undefined,
+  [StateCode.NM]: undefined,
+  [StateCode.NV]: undefined,
+  [StateCode.OK]: undefined,
+  [StateCode.OR]: undefined,
+  [StateCode.SD]: undefined,
+  [StateCode.TX]: undefined,
+  [StateCode.UT]: undefined,
+  [StateCode.WA]: undefined,
+  [StateCode.WY]: undefined,
+};
+const allStates: ReadonlySet<StateCode> = new Set(
+  Object.keys(states) as StateCode[],
+);
+
+type SceneryTownSourceProps = (
+  | {
+      game: 'ats';
+      enabledStates?: Set<StateCode>; // defaults to full set
+    }
+  | {
+      game: 'ets2';
+      dlcs?: ReadonlySet<Ets2SelectableDlc>; // defaults to full set
+    }
+) & {
+  enableAutoHide?: boolean; // defaults to true
+  mode?: Mode; // defaults to 'light'
+};
+export const SceneryTownSource = (props: SceneryTownSourceProps) => {
+  const { game, enableAutoHide = true, mode = 'light' } = props;
+  const dataUrl = game === 'ats' ? atsSceneryTownsUrl : ets2SceneryTownsUrl;
+  const filter: ExpressionSpecification =
+    game === 'ats'
+      ? [
+          'all',
+          // specify `true` as a fallback so we don't skip labels with undefined `show`
+          ['boolean', ['get', 'show'], true],
+          [
+            'in',
+            ['slice', ['get', 'country'], -2],
+            ['literal', [...(props.enabledStates ?? allStates)]],
+          ],
+        ]
+      : createDlcGuardFilter(props.dlcs ?? Ets2SelectableDlcs);
+  const colors = modeColors[mode];
+  return (
+    <Source id={`${game}-scenery-towns`} type={'geojson'} data={dataUrl}>
+      <Layer
+        id={`${game}-scenery-towns`}
+        type={'symbol'}
+        minzoom={enableAutoHide ? 7 : 0}
+        maxzoom={enableAutoHide ? 12 : undefined}
+        filter={filter}
+        layout={{
+          ...baseTextLayout,
+          'text-field': game === 'ats' ? '{text}' : '{name}',
+          'text-allow-overlap': !enableAutoHide,
+          'text-variable-anchor': textVariableAnchor,
+          'text-size': 10.5,
+        }}
+        paint={colors.primaryTextPaint}
+      />
+    </Source>
+  );
+};
+
+function createDlcGuardFilter(
+  selectedDlcs: ReadonlySet<Ets2SelectableDlc>,
+): ExpressionSpecification {
+  const dlcGuards = toEts2DlcGuards(selectedDlcs);
+  return ['in', ['get', 'dlcGuard'], ['literal', [...dlcGuards]]];
+}

@@ -1,0 +1,28 @@
+{
+  "private": true,
+  "name": "@truckermudgeon/map",
+  "version": "0.0.0",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./*": "./*.ts"
+  },
+  "scripts": {
+    "test": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "@truckermudgeon/base": "0.0.0",
+    "@turf/helpers": "^7.2.0",
+    "@turf/line-intersect": "^7.0.0",
+    "@turf/line-offset": "^7.2.0",
+    "@turf/simplify": "^7.0.0",
+    "proj4": "^2.9.2",
+    "rbush": "^4.0.1",
+    "rbush-knn": "^4.0.0",
+    "tinyqueue": "^3.0.0"
+  }
+}

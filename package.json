@@ -1,0 +1,28 @@
+{
+  "name": "ets2-record",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Record ETS2/ATS telemetry: a recorder server + a remote telemetry agent",
+  "bin": {
+    "ets2-record": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "commander": "^13.1.0",
+    "trucksim-telemetry": "^1.0.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.13.1",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

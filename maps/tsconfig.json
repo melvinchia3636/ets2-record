@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ESNext"],
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@truckermudgeon/base/*": ["./src/libs/base/*"],
+      "@truckermudgeon/io": ["./src/libs/io/index.ts"],
+      "@truckermudgeon/map/*": ["./src/libs/map/*"],
+      "@truckermudgeon/ui": ["./src/libs/ui/index.ts"],
+      "@truckermudgeon/ui/*": ["./src/libs/ui/*"]
+    }
+  },
+  "exclude": ["./build"]
+}
