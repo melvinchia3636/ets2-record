@@ -1,132 +1,44 @@
 import { hostname } from "node:os";
-import { WebSocketServer, WebSocket } from "ws";
-import { BaseProvider } from "./provider.js";
 import type { TelemetryProvider } from "./provider.js";
-import type {
-  CancelledInfo,
-  DeliveredInfo,
-  GameEventInput,
-  JobInfo,
-  TelemetryFrame,
-} from "./types.js";
-
-export type RemoteMessage =
-  | { type: "hello"; clientId: string; game: string }
-  | { type: "connected" }
-  | { type: "disconnected" }
-  | { type: "frame"; frame: TelemetryFrame }
-  | { type: "job-started"; job: JobInfo }
-  | { type: "job-delivered"; job: DeliveredInfo }
-  | { type: "job-cancelled"; job: CancelledInfo }
-  | { type: "game-event"; event: GameEventInput };
-
-export interface ServeOptions {
-  host: string;
-  port: number;
-  token?: string;
-  log?: (message: string) => void;
-  onClient?: (clientId: string, remote: string | undefined) => void;
-}
-
-/** A TelemetryProvider fed by remote agents over WebSocket. */
-export class WebSocketServerProvider extends BaseProvider {
-  private wss: WebSocketServer | null = null;
-  private readonly clients = new Set<WebSocket>();
-  private readonly log: (message: string) => void;
-
-  constructor(private readonly opts: ServeOptions) {
-    super();
-    this.log = opts.log ?? (() => {});
-  }
-
-  start(): void {
-    const server = new WebSocketServer({ host: this.opts.host, port: this.opts.port });
-    this.wss = server;
-    server.on("listening", () => {
-      this.log(`listening on ws://${this.opts.host}:${this.opts.port}`);
-    });
-    server.on("connection", (socket, req) => {
-      const url = new URL(req.url ?? "/", "ws://localhost");
-      const token = url.searchParams.get("token") ?? undefined;
-      if (this.opts.token && token !== this.opts.token) {
-        socket.close(4001, "unauthorized");
-        this.log(`rejected unauthenticated client from ${req.socket.remoteAddress}`);
-        return;
-      }
-      this.clients.add(socket);
-      const clientId = url.searchParams.get("client") ?? req.socket.remoteAddress ?? "unknown";
-      this.log(`client connected: ${clientId} (${req.socket.remoteAddress})`);
-      this.opts.onClient?.(clientId, req.socket.remoteAddress ?? undefined);
-
-      socket.on("message", (data) => this.handle(socket, data.toString()));
-      socket.on("close", () => {
-        this.clients.delete(socket);
-        this.log(`client disconnected: ${clientId}`);
-        this.emit("disconnected");
-      });
-      socket.on("error", (err) => this.log(`client error (${clientId}): ${err.message}`));
-    });
-  }
-
-  private handle(socket: WebSocket, raw: string): void {
-    let msg: RemoteMessage;
-    try {
-      msg = JSON.parse(raw) as RemoteMessage;
-    } catch {
-      return;
-    }
-    switch (msg.type) {
-      case "hello":
-        this.log(`hello from ${msg.clientId} (${msg.game})`);
-        this.emit("connected");
-        break;
-      case "connected":
-        this.emit("connected");
-        break;
-      case "disconnected":
-        this.emit("disconnected");
-        break;
-      case "frame":
-        this.emit("frame", msg.frame);
-        break;
-      case "job-started":
-        this.emit("job-started", msg.job);
-        break;
-      case "job-delivered":
-        this.emit("job-delivered", msg.job);
-        break;
-      case "job-cancelled":
-        this.emit("job-cancelled", msg.job);
-        break;
-      case "game-event":
-        this.emit("game-event", msg.event);
-        break;
-    }
-  }
-
-  stop(): void {
-    for (const socket of this.clients) socket.close();
-    this.clients.clear();
-    this.wss?.close();
-    this.wss = null;
-  }
-}
+import type { TelemetryFrame } from "./types.js";
+import {
+  toWireCancelled,
+  toWireDelivered,
+  toWireFrame,
+  toWireGameEvent,
+  toWireJobStarted,
+  type AgentMessage,
+} from "./wire.js";
 
 export interface AgentOptions {
+  /** LifeForge API base URL, e.g. `http://host:3636`. */
   server: string;
   token?: string;
   intervalMs: number;
   clientId?: string;
+  /** Max telemetry messages buffered while the server is unreachable. */
+  maxPending?: number;
   log?: (message: string) => void;
 }
 
-/** Reads local telemetry and streams it to a remote recorder server. */
+/** How often buffered messages are flushed to the server. */
+const FLUSH_MS = 5000;
+/** Max messages sent in a single HTTP request. */
+const MAX_BATCH = 2000;
+/** Delay before retrying a failed batch. */
+const RETRY_MS = 3000;
+
+/** Reads local telemetry and streams it to a LifeForge recorder server over HTTP. */
 export class TelemetryAgent {
-  private socket: WebSocket | null = null;
+  private pending: AgentMessage[] = [];
   private lastFrameAt = 0;
+  private lastFrame: TelemetryFrame | null = null;
+  private flushTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private flushing = false;
   private stopped = false;
-  private providerStarted = false;
-  private reconnectTimer: NodeJS.Timeout | null = null;
+  private dropped = 0;
+  private readonly maxPending: number;
   private readonly clientId: string;
   private readonly log: (message: string) => void;
 
@@ -135,65 +47,114 @@ export class TelemetryAgent {
     private readonly opts: AgentOptions,
   ) {
     this.clientId = opts.clientId ?? hostname();
+    this.maxPending = opts.maxPending ?? 1_000_000;
     this.log = opts.log ?? (() => {});
   }
 
   start(): void {
-    this.provider.on("connected", () => this.send({ type: "connected" }));
-    this.provider.on("disconnected", () => this.send({ type: "disconnected" }));
+    this.provider.on("connected", () => this.enqueue({ type: "connected" }));
+    this.provider.on("disconnected", () =>
+      this.enqueue({ type: "disconnected" }),
+    );
     this.provider.on("frame", (frame) => this.onFrame(frame));
-    this.provider.on("job-started", (job) => this.send({ type: "job-started", job }));
-    this.provider.on("job-delivered", (job) => this.send({ type: "job-delivered", job }));
-    this.provider.on("job-cancelled", (job) => this.send({ type: "job-cancelled", job }));
-    this.provider.on("game-event", (event) => this.send({ type: "game-event", event }));
-    this.connect();
-  }
-
-  private url(): string {
-    const u = new URL(this.opts.server);
-    u.searchParams.set("client", this.clientId);
-    if (this.opts.token) u.searchParams.set("token", this.opts.token);
-    return u.toString();
-  }
-
-  private connect(): void {
-    if (this.stopped) return;
-    const socket = new WebSocket(this.url());
-    this.socket = socket;
-    socket.on("open", () => {
-      this.log(`connected to ${this.opts.server} as ${this.clientId}`);
-      this.send({ type: "hello", clientId: this.clientId, game: "ets2" });
-      if (!this.providerStarted) {
-        this.providerStarted = true;
-        this.provider.start();
-      }
+    this.provider.on("job-started", (job) => {
+      this.enqueue({
+        type: "job-started",
+        job: toWireJobStarted(job, this.lastFrame),
+      });
+      void this.flush();
     });
-    socket.on("close", () => {
-      this.socket = null;
-      if (this.stopped) return;
-      this.log("server connection closed; retrying in 3s");
-      this.reconnectTimer = setTimeout(() => this.connect(), 3000);
+    this.provider.on("job-delivered", (job) => {
+      this.enqueue({ type: "job-delivered", job: toWireDelivered(job) });
+      void this.flush();
     });
-    socket.on("error", (err: Error) => this.log(`socket error: ${err.message}`));
+    this.provider.on("job-cancelled", (job) => {
+      this.enqueue({ type: "job-cancelled", job: toWireCancelled(job) });
+      void this.flush();
+    });
+    this.provider.on("game-event", (event) =>
+      this.enqueue({ type: "game-event", event: toWireGameEvent(event) }),
+    );
+
+    this.flushTimer = setInterval(() => void this.flush(), FLUSH_MS);
+    this.provider.start();
   }
 
-  private send(msg: RemoteMessage): void {
-    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(msg));
-    }
+  private endpoint(): string {
+    return `${this.opts.server.replace(/\/+$/, "")}/ets2-record/telemetry/ingest`;
   }
 
   private onFrame(frame: TelemetryFrame): void {
+    this.lastFrame = frame;
     if (frame.t - this.lastFrameAt < this.opts.intervalMs) return;
     this.lastFrameAt = frame.t;
-    this.send({ type: "frame", frame });
+    this.enqueue({ type: "frame", frame: toWireFrame(frame) });
   }
 
-  stop(): void {
+  private enqueue(message: AgentMessage): void {
+    this.pending.push(message);
+    while (this.pending.length > this.maxPending) {
+      this.pending.shift();
+      this.dropped++;
+      if (this.dropped % 1000 === 1) {
+        this.log(`buffer full; dropped ${this.dropped} message(s)`);
+      }
+    }
+  }
+
+  /** Sends the buffered messages. A 2xx response acknowledges (drops) them. */
+  async flush(): Promise<void> {
+    if (this.flushing || this.pending.length === 0) return;
+    this.flushing = true;
+    const batch = this.pending.splice(0, MAX_BATCH);
+    try {
+      const res = await fetch(this.endpoint(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: this.opts.token ?? "",
+          clientId: this.clientId,
+          messages: batch,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const dropped = this.dropped;
+      this.dropped = 0;
+      this.log(
+        `sent ${batch.length} message(s)${dropped ? ` (${dropped} dropped)` : ""}`,
+      );
+      if (this.retryTimer) {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+      }
+    } catch (err) {
+      // Put the batch back at the front, preserving order.
+      this.pending = [...batch, ...this.pending];
+      while (this.pending.length > this.maxPending) {
+        this.pending.shift();
+        this.dropped++;
+      }
+      this.log(`send failed: ${(err as Error).message}; retrying`);
+      if (!this.retryTimer && !this.stopped) {
+        this.retryTimer = setTimeout(() => {
+          this.retryTimer = null;
+          void this.flush();
+        }, RETRY_MS);
+      }
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.flushTimer) clearInterval(this.flushTimer);
+    this.flushTimer = null;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
     this.stopped = true;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.provider.stop();
-    this.socket?.close();
-    this.socket = null;
+    await this.flush();
   }
 }
