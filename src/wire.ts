@@ -6,7 +6,7 @@ import type {
   TelemetryFrame,
 } from "./types.js";
 
-/** Payload shapes understood by the LifeForge `ets2-record` ingest endpoint. */
+/** Payload shapes understood by the LifeForge `truckers-log` ingest endpoint. */
 export interface WireFrame {
   t_ms: number;
   game_min: number;
