@@ -130,7 +130,7 @@ export function toWireJobStarted(
 ): WireJobStarted {
   return {
     game: frame?.game ?? "unknown",
-    started_game_min: job.startingGameMin,
+    started_game_min: job.startingGameMin || frame?.gameMin || 0,
     cargo: job.cargo,
     cargo_id: job.cargoId,
     cargo_mass_kg: job.cargoMassKg,
