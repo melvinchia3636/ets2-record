@@ -2,6 +2,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { Command } from "commander";
 import { TelemetryAgent } from "./remote.js";
+import { defaultScreenshotDirs } from "./screenshots.js";
 import { LiveProvider } from "./telemetry.js";
 
 /** macOS: prevent idle sleep so a sleeping host doesn't punch holes in recordings. */
@@ -52,17 +53,50 @@ program
     "--no-keep-awake",
     "do not prevent the host from idle-sleeping (macOS)",
   )
+  .option(
+    "--screenshot-dir <dirs>",
+    "comma-separated screenshot folders to watch (defaults to auto-detected game paths)",
+  )
+  .option("--no-screenshots", "disable in-game screenshot capture")
+  .option(
+    "--backfill",
+    "upload all existing screenshots once before starting the agent",
+  )
   .action((opts) => {
+    const screenshotDirs =
+      opts.screenshots === false
+        ? []
+        : opts.screenshotDir
+          ? String(opts.screenshotDir)
+              .split(",")
+              .map((dir) => dir.trim())
+              .filter(Boolean)
+          : defaultScreenshotDirs();
+
     const agent = new TelemetryAgent(new LiveProvider(opts.sharedMemory), {
       server: opts.server,
       token: opts.token,
       intervalMs: Number(opts.interval),
       maxPending: Number(opts.buffer),
+      screenshotDirs,
+      backfill: Boolean(opts.backfill),
       log: (m) => console.log(`[agent] ${m}`),
     });
     console.log(
       `streaming telemetry to ${opts.server} every ${opts.interval} ms (Ctrl+C to stop)`,
     );
+    if (opts.screenshots === false) {
+      console.log("screenshot capture disabled");
+    } else if (screenshotDirs.length > 0) {
+      console.log(`watching screenshots: ${screenshotDirs.join(", ")}`);
+    } else {
+      console.log(
+        "no screenshot folder found — pass --screenshot-dir <dir> to enable capture",
+      );
+    }
+    if (opts.backfill && opts.screenshots !== false) {
+      console.log("backfill enabled — existing screenshots upload first");
+    }
     console.log("open the game and take a job to start recording");
     const keepAwake = startKeepAwake(opts.keepAwake, (m) =>
       console.log(`[agent] ${m}`),
@@ -75,7 +109,7 @@ program
     };
     process.on("SIGINT", () => void shutdown());
     process.on("SIGTERM", () => void shutdown());
-    agent.start();
+    void agent.start();
   });
 
 program.parse();

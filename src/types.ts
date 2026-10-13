@@ -81,6 +81,25 @@ export interface GameEventInput {
   detail: string;
 }
 
+export interface ScreenshotMeta {
+  filename: string;
+  capturedAt: number;
+  mime: string;
+  size: number;
+  contentHash: string;
+  game: Game;
+  gameMin: number | null;
+  x: number | null;
+  y: number | null;
+  z: number | null;
+  headingDeg: number | null;
+  speedKmh: number | null;
+  truckId: string;
+  truckName: string;
+  truckBrand: string;
+  truckPlate: string;
+}
+
 export interface SampleRow {
   tripId: number;
   tMs: number;
