@@ -1,9 +1,17 @@
 import type { SCSSDKTelemetry } from "trucksim-telemetry";
 import { BaseProvider } from "./provider.js";
-import type { Game, JobInfo, TelemetryFrame } from "./types.js";
+import type {
+  DeliveredInfo,
+  Game,
+  JobInfo,
+  TelemetryFrame,
+} from "./types.js";
 
 const RAD_TO_DEG = 180 / Math.PI;
 const MS_TO_KMH = 3.6;
+
+/** How long to wait for the SDK to fill in the delivery summary. */
+const DELIVERY_SUMMARY_WAIT_MS = 3000;
 
 function toNumber(value: number | bigint): number {
   return typeof value === "bigint" ? Number(value) : value;
@@ -106,6 +114,7 @@ function defaultSharedMemoryName(): string {
 export class LiveProvider extends BaseProvider {
   private telemetry: ReturnType<typeof import("trucksim-telemetry").truckSimTelemetry> | null = null;
   private lastJob: JobInfo | null = null;
+  private pendingDelivery: { job: DeliveredInfo; startedAt: number } | null = null;
 
   constructor(private readonly sharedMemoryName?: string) {
     super();
@@ -113,6 +122,52 @@ export class LiveProvider extends BaseProvider {
 
   start(): void {
     void this.boot();
+  }
+
+  /**
+   * The SDK can flip `jobDelivered` before it fills in the delivery summary
+   * (distance, revenue, XP). Hold the message briefly and pick the values up
+   * from subsequent frames so the job isn't stored with zeros.
+   */
+  private flushPendingDelivery(
+    data?: SCSSDKTelemetry | null,
+    force = false,
+  ): void {
+    const pending = this.pendingDelivery;
+
+    if (!pending) return;
+
+    if (data) {
+      pending.job = {
+        ...pending.job,
+        finishedGameMin: data.jobFinishedTime || pending.job.finishedGameMin,
+        deliveryTimeMin:
+          data.jobDeliveredDeliveryTime || pending.job.deliveryTimeMin,
+        distanceKm: data.jobDeliveredDistanceKm || pending.job.distanceKm,
+        cargoDamage: data.jobDeliveredCargoDamage || pending.job.cargoDamage,
+        revenue: toNumber(data.jobDeliveredRevenue) || pending.job.revenue,
+        xp: data.jobDeliveredEarnedXp || pending.job.xp,
+        autopark: data.jobDeliveredAutoparkUsed || pending.job.autopark,
+        autoload: data.jobDeliveredAutoloadUsed || pending.job.autoload,
+      };
+    }
+
+    const ready =
+      pending.job.distanceKm > 0 &&
+      pending.job.revenue > 0 &&
+      pending.job.xp > 0;
+
+    if (
+      !force &&
+      !ready &&
+      Date.now() - pending.startedAt < DELIVERY_SUMMARY_WAIT_MS
+    ) {
+      return;
+    }
+
+    this.emit("job-delivered", pending.job);
+    this.pendingDelivery = null;
+    this.lastJob = null;
   }
 
   private async boot(): Promise<void> {
@@ -123,15 +178,20 @@ export class LiveProvider extends BaseProvider {
         // The library polls at ~60Hz even when the game isn't running, reporting
         // stale data. Only emit frames while the game instance is actually active.
         if (!data.sdkActive) return;
+        this.flushPendingDelivery(data);
         this.emit("frame", toFrame(data, Date.now()));
       },
     });
     this.telemetry = telemetry;
 
     telemetry.on("connected", () => this.emit("connected"));
-    telemetry.on("disconnected", () => this.emit("disconnected"));
+    telemetry.on("disconnected", () => {
+      this.flushPendingDelivery(null, true);
+      this.emit("disconnected");
+    });
 
     telemetry.on("job-started", (data) => {
+      this.flushPendingDelivery(null, true);
       const job = jobInfo(
         data as unknown as SCSSDKTelemetry,
         telemetry.data.current,
@@ -143,21 +203,25 @@ export class LiveProvider extends BaseProvider {
     telemetry.on("job-delivered", (data) => {
       const raw = data as unknown as SCSSDKTelemetry;
       const base = this.lastJob ?? jobInfo(raw, telemetry.data.current);
-      this.emit("job-delivered", {
-        ...base,
-        finishedGameMin: raw.jobFinishedTime,
-        deliveryTimeMin: raw.jobDeliveredDeliveryTime,
-        distanceKm: raw.jobDeliveredDistanceKm,
-        cargoDamage: raw.jobDeliveredCargoDamage,
-        revenue: toNumber(raw.jobDeliveredRevenue),
-        xp: raw.jobDeliveredEarnedXp,
-        autopark: raw.jobDeliveredAutoparkUsed,
-        autoload: raw.jobDeliveredAutoloadUsed,
-      });
-      this.lastJob = null;
+      this.pendingDelivery = {
+        startedAt: Date.now(),
+        job: {
+          ...base,
+          finishedGameMin: raw.jobFinishedTime,
+          deliveryTimeMin: raw.jobDeliveredDeliveryTime,
+          distanceKm: raw.jobDeliveredDistanceKm,
+          cargoDamage: raw.jobDeliveredCargoDamage,
+          revenue: toNumber(raw.jobDeliveredRevenue),
+          xp: raw.jobDeliveredEarnedXp,
+          autopark: raw.jobDeliveredAutoparkUsed,
+          autoload: raw.jobDeliveredAutoloadUsed,
+        },
+      };
+      this.flushPendingDelivery(telemetry.data.current);
     });
 
     telemetry.on("job-cancelled", (data) => {
+      this.flushPendingDelivery(null, true);
       const raw = data as unknown as SCSSDKTelemetry;
       const base = this.lastJob ?? jobInfo(raw, telemetry.data.current);
       this.emit("job-cancelled", { ...base, penalty: toNumber(raw.jobCancelledPenalty) });
