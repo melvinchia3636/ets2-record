@@ -59,6 +59,10 @@ export interface WireJobStarted {
   truck_name: string;
   truck_brand: string;
   truck_plate: string;
+  trailer_body_type: string;
+  trailer_id: string;
+  trailer_name: string;
+  trailer_brand: string;
 }
 
 export interface WireJobDelivered {
@@ -152,6 +156,10 @@ export function toWireJobStarted(
     truck_name: frame?.truckName ?? "",
     truck_brand: frame?.truckBrand ?? "",
     truck_plate: frame?.truckPlate ?? "",
+    trailer_body_type: job.trailerBodyType,
+    trailer_id: job.trailerId,
+    trailer_name: job.trailerName,
+    trailer_brand: job.trailerBrand,
   };
 }
 

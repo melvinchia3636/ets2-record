@@ -50,7 +50,28 @@ export function toFrame(data: SCSSDKTelemetry, now: number): TelemetryFrame {
   };
 }
 
-function jobInfo(data: SCSSDKTelemetry): JobInfo {
+function trailerInfo(data: SCSSDKTelemetry | null | undefined) {
+  const trailers = data?.trailers ?? []
+  const trailer =
+    trailers.find((t) => t.attached && t.bodyType) ??
+    trailers.find((t) => t.attached) ??
+    trailers.find((t) => t.bodyType)
+
+  return {
+    trailerBodyType: trailer?.bodyType ?? "",
+    trailerId: trailer?.id ?? "",
+    trailerName: trailer?.name ?? "",
+    trailerBrand: trailer?.brand ?? "",
+  }
+}
+
+function jobInfo(
+  data: SCSSDKTelemetry,
+  fallback?: SCSSDKTelemetry | null,
+): JobInfo {
+  const trailer = trailerInfo(data)
+  const fallbackTrailer = trailerInfo(fallback)
+
   return {
     cargo: data.cargo,
     cargoId: data.cargoId,
@@ -71,6 +92,10 @@ function jobInfo(data: SCSSDKTelemetry): JobInfo {
     income: toNumber(data.jobIncome),
     startingGameMin: data.jobStartingTime,
     deliveryWindowGameMin: data.timeAbsDelivery,
+    trailerBodyType: trailer.trailerBodyType || fallbackTrailer.trailerBodyType,
+    trailerId: trailer.trailerId || fallbackTrailer.trailerId,
+    trailerName: trailer.trailerName || fallbackTrailer.trailerName,
+    trailerBrand: trailer.trailerBrand || fallbackTrailer.trailerBrand,
   };
 }
 
@@ -107,14 +132,17 @@ export class LiveProvider extends BaseProvider {
     telemetry.on("disconnected", () => this.emit("disconnected"));
 
     telemetry.on("job-started", (data) => {
-      const job = jobInfo(data as unknown as SCSSDKTelemetry);
+      const job = jobInfo(
+        data as unknown as SCSSDKTelemetry,
+        telemetry.data.current,
+      );
       this.lastJob = job;
       this.emit("job-started", job);
     });
 
     telemetry.on("job-delivered", (data) => {
       const raw = data as unknown as SCSSDKTelemetry;
-      const base = this.lastJob ?? jobInfo(raw);
+      const base = this.lastJob ?? jobInfo(raw, telemetry.data.current);
       this.emit("job-delivered", {
         ...base,
         finishedGameMin: raw.jobFinishedTime,
@@ -131,7 +159,7 @@ export class LiveProvider extends BaseProvider {
 
     telemetry.on("job-cancelled", (data) => {
       const raw = data as unknown as SCSSDKTelemetry;
-      const base = this.lastJob ?? jobInfo(raw);
+      const base = this.lastJob ?? jobInfo(raw, telemetry.data.current);
       this.emit("job-cancelled", { ...base, penalty: toNumber(raw.jobCancelledPenalty) });
       this.lastJob = null;
     });

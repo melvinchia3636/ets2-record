@@ -55,6 +55,10 @@ export interface JobInfo {
   income: number;
   startingGameMin: number;
   deliveryWindowGameMin: number;
+  trailerBodyType: string;
+  trailerId: string;
+  trailerName: string;
+  trailerBrand: string;
 }
 
 export interface DeliveredInfo extends JobInfo {
